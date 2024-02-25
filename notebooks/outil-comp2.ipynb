@@ -1,0 +1,92 @@
+%pip install hvplot
+%pip install panel
+%pip install bokeh
+%pip install jupyter_bokeh
+
+import numpy as np
+import panel as pn
+import hvplot.pandas
+import pandas as pd
+
+NMAX = 25
+df = pd.DataFrame({'n' : np.arange(NMAX)})
+df2 = pd.DataFrame({'n' : np.arange(NMAX)})
+
+# MODIFY SLIDER START AND END HERE (START < VALUE < END)
+variable_widget = pn.widgets.Select(name="variable", value="n", options=list(df.columns)) 
+prix_widget = pn.widgets.IntSlider(name="prix d'achat", value=300_000, start=200_000, end=600_000)
+apport_widget = pn.widgets.IntSlider(name="épargne", value=50_000, start=0, end=200_000)
+depart_widget = pn.widgets.IntSlider(name="départ", value=5, start=1, end=20)
+loyerm2_widget = pn.widgets.IntSlider(name="loyer/m2", value=25, start=15, end=35)
+prixm2_widget = pn.widgets.IntSlider(name="prix/m2", value=5_000, start=3_000, end=8_000)
+plusvalue_widget = pn.widgets.FloatSlider(name="plusvalue - travaux", value=1, start=-3, end=3)
+cac40_widget = pn.widgets.FloatSlider(name="rendement épargne", value=4, start=-8, end=8)
+taux_widget = pn.widgets.FloatSlider(name="taux d'interêt", value=4, start=1, end=5)
+apport_ratio_widget = pn.widgets.FloatSlider(name="fraction épargne utilisée pour apport", value=1, start=0, end=1)
+occupation_widget = pn.widgets.FloatSlider(name="occupation", value=1, start=0, end=1)
+notaire_widget = pn.widgets.IntSlider(name="frais notaire + agence", value=12, start=7, end=16)
+monthly_widget = pn.widgets.IntSlider(name="mensualité emprunt", value=2000, start=500, end=3000)
+
+
+
+def compute_louer_acheter(data, monthly, prix, loyerm2, prixm2, gain, apport, apport_ratio,
+                          notaire_agence, taux, cac40):
+    taux = taux/100
+    cac40 = cac40/100
+    # louer
+    ratio = loyerm2/prixm2
+    data['loyer'] = prix*ratio
+    data['placement_loc_plusval'] = apport*(1 + cac40)**data['n'] - apport
+    monthly_savings = monthly - data['loyer']
+    saved = data['n'] * 12 * monthly_savings
+    interest_saved = (monthly_savings*12) * (((1 + cac40)**data['n']) - 1)/cac40
+    data['saved_interest'] = np.where(interest_saved > 0, interest_saved, 0)   
+    data['louer'] = data['placement_loc_plusval'] + data['saved_interest'] - data['loyer']*12*data['n']
+    
+    # acheter
+    apport_unused = apport*(1-apport_ratio)
+    data['placement_achat_plusval'] = np.where(interest_saved < 0, -interest_saved, 0) + \
+                            apport_unused*(1 + cac40)**data['n'] - apport_unused
+    data['plusval_tot_achat'] = data['placement_achat_plusval'] + prix*(1+(gain/100))**data['n'] - prix
+    ratio = loyerm2/prixm2
+    loyer = prix*ratio
+    data['cout_fix'] = data['n']*loyer
+    data['frais_achat'] = prix*(notaire_agence)/100
+    data['montant_emprunt'] = prix + data['frais_achat'] - apport*apport_ratio
+    remaining = data['montant_emprunt'] * ((1 + taux)**data['n']) - \
+                        (12*monthly/taux)*(((1+taux)**data['n']) - 1)
+    
+    data['emprunt remboursé'] = -(remaining < 0)* 120_000
+    interest = remaining * taux
+    data['interest'] = np.where(remaining > 0, interest, 0)
+    payment = monthly - data['interest']/12
+    data['payment'] = np.where(remaining > 0, payment, 0)
+    data['remaining'] = np.where(remaining > 0, remaining, 0)
+    data['pay_cumul'] = np.cumsum(12*data['payment'])
+    data['int_cumul'] = np.cumsum(data['interest'])
+    
+    data['acheter'] = data['plusval_tot_achat'] - data['cout_fix'] - data['int_cumul'] - data['frais_achat']
+    return data
+
+df = hvplot.bind(compute_louer_acheter, df, monthly_widget, prix_widget, loyerm2_widget, prixm2_widget, 
+          plusvalue_widget, 
+          apport_widget, apport_ratio_widget, notaire_widget,
+          taux_widget, cac40_widget).interactive(width=600)
+
+pipeline = (
+    df['louer'].hvplot(height=400, width=600,  ylim=(-300_000,0), legend=True) *
+    df['acheter'].hvplot(height=400, width=600,  ylim=(-300_000,0), legend=True) 
+    # df['emprunt remboursé'].hvplot(height=400, width=600,  ylim=(-300_000,0), legend=True, line_width=10)
+)
+
+pn.Column(pn.Row('loyer =', np.round(np.mean(df.loyer)).output()), 
+          pipeline.output(), 
+          pn.Column(
+            pn.Row(pipeline.widgets()[0], pipeline.widgets()[1]),
+            pn.Row(pipeline.widgets()[2], pipeline.widgets()[3]),
+            pn.Row(pipeline.widgets()[4], pipeline.widgets()[5]),
+            pn.Row(pipeline.widgets()[6], pipeline.widgets()[7]),
+            pn.Row(pipeline.widgets()[8], pipeline.widgets()[9]),
+            ),
+          pn.Row(df[['acheter', 'louer', 'placement_loc_plusval', 'placement_achat_plusval', 'plusval_tot_achat']].output())
+          ).servable(target='panel')
